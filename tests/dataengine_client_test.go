@@ -9,55 +9,52 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Hesham127/flwnBackend/internal/platform/dataengine"
-	"github.com/Hesham127/flwnBackend/internal/workspace"
+	"github.com/Hesham127/flwnBackend/internal/project"
 )
 
-func TestClientSendsServiceKeyOnly(t *testing.T) {
+func TestClientRefusesCallsWithoutActingMember(t *testing.T) {
 	f := newFakeEngine(t)
-	f.respond(http.StatusOK, `{"items": [], "limit": 50, "offset": 0}`)
-
-	if _, err := workspace.NewService(f.client(t)).List(context.Background(), dataengine.Page{}); err != nil {
-		t.Fatal(err)
+	_, err := project.NewService(f.client(t)).Get(context.Background(), uuid.New(), uuid.New())
+	if !errors.Is(err, dataengine.ErrNoActingMember) {
+		t.Fatalf("err = %v, want ErrNoActingMember", err)
 	}
+	if f.lastRequest().Method != "" {
+		t.Fatal("engine was called without an acting member")
+	}
+}
+
+func TestClientSendsServiceKeyAndActingMember(t *testing.T) {
+	f := newFakeEngine(t)
+	f.respond(http.StatusOK, `{}`)
+	member := uuid.New()
+
+	ctx := dataengine.WithActingMember(context.Background(), member)
+	_, _ = project.NewService(f.client(t)).Get(ctx, uuid.New(), uuid.New())
 
 	h := f.lastRequest().Header
 	if got := h.Get("X-Data-API-Key"); got != testAPIKey {
 		t.Errorf("X-Data-API-Key = %q, want %q", got, testAPIKey)
 	}
-	if got := h.Get("X-Acting-Member-Id"); got != "" {
-		t.Errorf("X-Acting-Member-Id = %q, want none", got)
+	if got := h.Get("X-Acting-Member-Id"); got != member.String() {
+		t.Errorf("X-Acting-Member-Id = %q, want %q", got, member)
 	}
 	if got := h.Get("Authorization"); got != "" {
 		t.Errorf("Authorization = %q, want none", got)
 	}
 }
 
-func TestClientSendsActingMemberFromContext(t *testing.T) {
-	f := newFakeEngine(t)
-	f.respond(http.StatusOK, `{"items": [], "limit": 50, "offset": 0}`)
-	member := uuid.New()
-
-	ctx := dataengine.WithActingMember(context.Background(), member)
-	if _, err := workspace.NewService(f.client(t)).List(ctx, dataengine.Page{}); err != nil {
-		t.Fatal(err)
-	}
-
-	if got := f.lastRequest().Header.Get("X-Acting-Member-Id"); got != member.String() {
-		t.Errorf("X-Acting-Member-Id = %q, want %q", got, member)
-	}
-}
-
 func TestClientTurnsEngineErrorIntoAPIError(t *testing.T) {
 	f := newFakeEngine(t)
-	f.respond(http.StatusConflict, `{"detail": "slug already taken"}`)
+	f.respond(http.StatusConflict, `{"detail": "key already taken"}`)
 
-	_, err := workspace.NewService(f.client(t)).Create(context.Background(), workspace.Create{Name: "Acme", Slug: "acme"})
+	ctx := dataengine.WithActingMember(context.Background(), uuid.New())
+	_, err := project.NewService(f.client(t)).Get(ctx, uuid.New(), uuid.New())
 
 	var apiErr *dataengine.APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("err = %v, want *APIError", err)
 	}
-	if apiErr.Status != http.StatusConflict || string(apiErr.Detail) != `"slug already taken"` {
+	if apiErr.Status != http.StatusConflict || string(apiErr.Detail) != `"key already taken"` {
 		t.Errorf("got %d %s", apiErr.Status, apiErr.Detail)
 	}
 }

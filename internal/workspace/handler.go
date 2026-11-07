@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Hesham127/flwnBackend/internal/platform/httpx"
+	"github.com/Hesham127/flwnBackend/internal/platform/secure"
 )
 
 type handler struct {
@@ -17,25 +18,21 @@ func (h *handler) create(c *gin.Context) {
 	if !httpx.BindJSON(c, &in) {
 		return
 	}
-	out, err := h.svc.Create(c.Request.Context(), in)
+	out, err := h.svc.Create(c.Request.Context(), secure.PrincipalFrom(c), in)
 	if err != nil {
-		httpx.Error(c, err)
+		h.svc.writeError(c, err)
 		return
 	}
 	c.JSON(http.StatusCreated, out)
 }
 
 func (h *handler) list(c *gin.Context) {
-	page, ok := httpx.QueryPage(c)
-	if !ok {
-		return
-	}
-	out, err := h.svc.List(c.Request.Context(), page)
+	out, err := h.svc.List(c.Request.Context(), secure.PrincipalFrom(c))
 	if err != nil {
-		httpx.Error(c, err)
+		h.svc.writeError(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, out)
+	c.JSON(http.StatusOK, gin.H{"items": out, "total": len(out)})
 }
 
 func (h *handler) get(c *gin.Context) {
@@ -78,4 +75,17 @@ func (h *handler) delete(c *gin.Context) {
 		return
 	}
 	c.Status(http.StatusNoContent)
+}
+
+func (h *handler) transfer(c *gin.Context) {
+	var in Transfer
+	if !httpx.BindJSON(c, &in) {
+		return
+	}
+	out, err := h.svc.Transfer(c.Request.Context(), secure.PrincipalFrom(c), in)
+	if err != nil {
+		httpx.Error(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, out)
 }

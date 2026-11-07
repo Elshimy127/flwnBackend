@@ -20,6 +20,11 @@ import (
 // 5xx or transport failure means the engine is down; neither is the caller's fault, so both
 // become 502.
 func Error(c *gin.Context, err error) {
+	var se *StatusError
+	if errors.As(err, &se) {
+		c.JSON(se.Status, gin.H{"error": se.Code})
+		return
+	}
 	var apiErr *dataengine.APIError
 	if errors.As(err, &apiErr) {
 		switch {
@@ -36,6 +41,18 @@ func Error(c *gin.Context, err error) {
 	}
 	c.JSON(http.StatusBadGateway, gin.H{"detail": "data engine unavailable"})
 }
+
+// StatusError is a backend decision (authorization rule, bad input) rather than an engine answer.
+type StatusError struct {
+	Status int
+	Code   string
+}
+
+func (e *StatusError) Error() string { return e.Code }
+
+// Forbidden and BadRequest build backend decisions for services.
+func Forbidden(code string) error  { return &StatusError{Status: http.StatusForbidden, Code: code} }
+func BadRequest(code string) error { return &StatusError{Status: http.StatusBadRequest, Code: code} }
 
 func badRequest(c *gin.Context, detail string) {
 	c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"detail": detail})

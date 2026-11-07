@@ -1,45 +1,37 @@
 package user
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/Hesham127/flwnBackend/internal/platform/httpx"
+	"github.com/Hesham127/flwnBackend/internal/platform/secure"
 )
 
 type handler struct {
 	svc *Service
 }
 
-func (h *handler) create(c *gin.Context) {
-	var in Create
-	if !httpx.BindJSON(c, &in) {
-		return
-	}
-	out, err := h.svc.Create(c.Request.Context(), in)
-	if err != nil {
-		httpx.Error(c, err)
-		return
-	}
-	c.JSON(http.StatusCreated, out)
-}
-
-func (h *handler) list(c *gin.Context) {
-	page, ok := httpx.QueryPage(c)
+// self parses :user_id and allows only the caller's own account.
+func self(c *gin.Context) (uuid.UUID, bool) {
+	id, ok := httpx.PathUUID(c, "user_id")
 	if !ok {
-		return
+		return uuid.Nil, false
 	}
-	out, err := h.svc.List(c.Request.Context(), httpx.QueryString(c, "email"), page)
-	if err != nil {
-		httpx.Error(c, err)
-		return
+	if id != secure.PrincipalFrom(c).UserID {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "not_your_account"})
+		return uuid.Nil, false
 	}
-	c.JSON(http.StatusOK, out)
+	return id, true
 }
 
 func (h *handler) get(c *gin.Context) {
-	id, ok := httpx.PathUUID(c, "user_id")
+	id, ok := self(c)
 	if !ok {
 		return
 	}
@@ -52,10 +44,20 @@ func (h *handler) get(c *gin.Context) {
 }
 
 func (h *handler) update(c *gin.Context) {
-	id, ok := httpx.PathUUID(c, "user_id")
+	id, ok := self(c)
 	if !ok {
 		return
 	}
+	// Email is the login identity: it changes only through the verified /auth/email flow.
+	raw, _ := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	var probe map[string]json.RawMessage
+	if json.Unmarshal(raw, &probe) == nil {
+		if _, has := probe["email"]; has {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "email_changes_use_auth_email"})
+			return
+		}
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
 	var in Update
 	if !httpx.BindJSON(c, &in) {
 		return
@@ -66,16 +68,4 @@ func (h *handler) update(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, out)
-}
-
-func (h *handler) delete(c *gin.Context) {
-	id, ok := httpx.PathUUID(c, "user_id")
-	if !ok {
-		return
-	}
-	if err := h.svc.Delete(c.Request.Context(), id); err != nil {
-		httpx.Error(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
 }

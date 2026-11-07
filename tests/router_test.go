@@ -45,11 +45,13 @@ func tasksPath(ws, project uuid.UUID) string {
 func TestCreateTaskForwardsBodyAndActor(t *testing.T) {
 	f := newFakeEngine(t)
 	f.respond(http.StatusCreated, taskJSON)
-	ws, project, member := uuid.New(), uuid.New(), uuid.New()
+	ws, project := uuid.New(), uuid.New()
+	me := f.signIn(t, ws, "member")
+	member := me.member
 
 	w := do(t, f, http.MethodPost, tasksPath(ws, project),
 		`{"work_item_id": "44444444-4444-4444-4444-444444444444", "title": "Add approval endpoint", "priority": "high"}`,
-		map[string]string{"X-Member-Id": member.String()})
+		me.bearer())
 
 	if w.Code != http.StatusCreated {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body)
@@ -72,9 +74,10 @@ func TestUpdateTaskKeepsNullApartFromAbsent(t *testing.T) {
 	f := newFakeEngine(t)
 	f.respond(http.StatusOK, taskJSON)
 	ws, project, id := uuid.New(), uuid.New(), uuid.New()
+	me := f.signIn(t, ws, "member")
 	path := tasksPath(ws, project) + "/" + id.String()
 
-	do(t, f, http.MethodPatch, path, `{"sprint_id": null}`, nil)
+	do(t, f, http.MethodPatch, path, `{"sprint_id": null}`, me.bearer())
 	var sent map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(f.lastRequest().Body), &sent); err != nil {
 		t.Fatal(err)
@@ -83,7 +86,7 @@ func TestUpdateTaskKeepsNullApartFromAbsent(t *testing.T) {
 		t.Errorf("null sprint_id not forwarded: %s", f.lastRequest().Body)
 	}
 
-	do(t, f, http.MethodPatch, path, `{"title": "Renamed"}`, nil)
+	do(t, f, http.MethodPatch, path, `{"title": "Renamed"}`, me.bearer())
 	sent = nil
 	if err := json.Unmarshal([]byte(f.lastRequest().Body), &sent); err != nil {
 		t.Fatal(err)
@@ -97,8 +100,9 @@ func TestListTasksForwardsFilters(t *testing.T) {
 	f := newFakeEngine(t)
 	f.respond(http.StatusOK, `{"items": [], "limit": 10, "offset": 20, "has_more": false}`)
 	ws, project := uuid.New(), uuid.New()
+	me := f.signIn(t, ws, "viewer")
 
-	w := do(t, f, http.MethodGet, tasksPath(ws, project)+"?status=todo&backlog=true&limit=10&offset=20", "", nil)
+	w := do(t, f, http.MethodGet, tasksPath(ws, project)+"?status=todo&backlog=true&limit=10&offset=20", "", me.bearer())
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body)
@@ -114,8 +118,10 @@ func TestListTasksForwardsFilters(t *testing.T) {
 func TestDeleteReturnsNoContent(t *testing.T) {
 	f := newFakeEngine(t)
 	f.respond(http.StatusNoContent, ``)
+	ws := uuid.New()
+	me := f.signIn(t, ws, "member")
 
-	w := do(t, f, http.MethodDelete, "/api/v1/workspaces/"+uuid.NewString(), "", nil)
+	w := do(t, f, http.MethodDelete, tasksPath(ws, uuid.New())+"/"+uuid.NewString(), "", me.bearer())
 
 	if w.Code != http.StatusNoContent {
 		t.Errorf("status = %d, body = %s", w.Code, w.Body)
@@ -139,8 +145,10 @@ func TestEngineErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeEngine(t)
 			f.respond(tc.engineStatus, tc.engineBody)
+			ws := uuid.New()
+			me := f.signIn(t, ws, "viewer")
 
-			w := do(t, f, http.MethodGet, "/api/v1/workspaces/"+uuid.NewString(), "", nil)
+			w := do(t, f, http.MethodGet, "/api/v1/workspaces/"+ws.String(), "", me.bearer())
 
 			if w.Code != tc.wantStatus {
 				t.Errorf("status = %d, want %d (body %s)", w.Code, tc.wantStatus, w.Body)
@@ -154,14 +162,18 @@ func TestEngineErrors(t *testing.T) {
 
 func TestBadInputIsRejectedBeforeEngine(t *testing.T) {
 	f := newFakeEngine(t)
+	ws := uuid.New()
+	me := f.signIn(t, ws, "owner")
+	wsPath := "/api/v1/workspaces/" + ws.String()
 	cases := []struct{ name, method, path, body string }{
-		{"bad path uuid", http.MethodGet, "/api/v1/workspaces/not-a-uuid", ""},
-		{"bad limit", http.MethodGet, "/api/v1/workspaces?limit=ten", ""},
-		{"bad json", http.MethodPost, "/api/v1/workspaces", "{"},
+		{"bad path uuid", http.MethodGet, wsPath + "/projects/not-a-uuid", ""},
+		{"bad limit", http.MethodGet, wsPath + "/members?limit=ten", ""},
+		{"bad json", http.MethodPatch, wsPath, "{"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w := do(t, f, tc.method, tc.path, tc.body, nil)
+			f.reset()
+			w := do(t, f, tc.method, tc.path, tc.body, me.bearer())
 			if w.Code != http.StatusBadRequest {
 				t.Errorf("status = %d, want 400 (body %s)", w.Code, w.Body)
 			}
@@ -169,10 +181,5 @@ func TestBadInputIsRejectedBeforeEngine(t *testing.T) {
 				t.Errorf("engine was called: %+v", f.lastRequest())
 			}
 		})
-	}
-
-	w := do(t, f, http.MethodGet, "/api/v1/workspaces", "", map[string]string{"X-Member-Id": "nope"})
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("bad X-Member-Id: status = %d", w.Code)
 	}
 }
