@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Hesham127/flwnBackend/internal/platform/httpx"
+	"github.com/Hesham127/flwnBackend/internal/platform/secure"
 )
 
 type handler struct {
@@ -21,7 +22,7 @@ func (h *handler) create(c *gin.Context) {
 	if !httpx.BindJSON(c, &in) {
 		return
 	}
-	out, err := h.svc.Create(c.Request.Context(), ws, in)
+	out, err := h.svc.Create(c.Request.Context(), secure.PrincipalFrom(c), ws, in)
 	if err != nil {
 		httpx.Error(c, err)
 		return
@@ -76,7 +77,7 @@ func (h *handler) update(c *gin.Context) {
 	if !httpx.BindJSON(c, &in) {
 		return
 	}
-	out, err := h.svc.Update(c.Request.Context(), ws, id, in)
+	out, err := h.svc.Update(c.Request.Context(), secure.PrincipalFrom(c), ws, id, in)
 	if err != nil {
 		httpx.Error(c, err)
 		return
@@ -93,7 +94,7 @@ func (h *handler) delete(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.Delete(c.Request.Context(), ws, id); err != nil {
+	if err := h.svc.Delete(c.Request.Context(), secure.PrincipalFrom(c), ws, id); err != nil {
 		httpx.Error(c, err)
 		return
 	}
