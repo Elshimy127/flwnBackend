@@ -66,6 +66,7 @@ func Register(r *secure.Router, svc *auth.Service, cfg Config, limiter *secure.R
 	r.POST("/account/delete", ticket, limited, h.deleteAccountWithTicket)
 
 	refresh := secure.Policy{Mode: secure.Refresh}
+	r.POST("/csrf", refresh, limited, h.csrf)
 	r.POST("/refresh", refresh, h.cookieGuard, h.refresh(true))
 	r.POST("/logout", refresh, h.cookieGuard, h.logout(true))
 	r.POST("/switch", refresh, h.cookieGuard, h.switchWorkspace(true))
@@ -281,15 +282,10 @@ func (h *Handlers) respondPair(c *gin.Context, status int, p auth.TokenPair, bro
 	if browser {
 		maxAge := int(time.Until(p.RefreshExpiresAt).Seconds())
 		http.SetCookie(c.Writer, &http.Cookie{
-			Name: refreshCookieName(p.WorkspaceID), Value: p.RefreshToken, Path: h.cfg.CookiePath,
+			Name: h.refreshCookieName(p.WorkspaceID), Value: p.RefreshToken, Path: h.cfg.CookiePath,
 			MaxAge: maxAge, HttpOnly: true, Secure: h.cfg.CookieSecure, SameSite: http.SameSiteStrictMode,
 		})
-		csrf := h.csrfToken(p.LoginSessionID)
-		http.SetCookie(c.Writer, &http.Cookie{
-			Name: h.csrfCookieName(), Value: csrf, Path: "/", MaxAge: maxAge,
-			HttpOnly: false, Secure: h.cfg.CookieSecure, SameSite: http.SameSiteStrictMode,
-		})
-		body["csrf_token"] = csrf
+		body["csrf_token"] = h.setCSRFCookie(c, p.LoginSessionID, maxAge)
 	} else {
 		body["refresh_token"] = p.RefreshToken
 	}
@@ -299,8 +295,24 @@ func (h *Handlers) respondPair(c *gin.Context, status int, p auth.TokenPair, bro
 	c.JSON(status, body)
 }
 
-func refreshCookieName(ws uuid.UUID) string {
-	return refreshCookiePrefix + strings.ReplaceAll(ws.String(), "-", "")
+// setCSRFCookie sets the readable CSRF cookie for a login session and returns its value.
+func (h *Handlers) setCSRFCookie(c *gin.Context, loginSession uuid.UUID, maxAge int) string {
+	csrf := h.csrfToken(loginSession)
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name: h.csrfCookieName(), Value: csrf, Path: "/", MaxAge: maxAge,
+		HttpOnly: false, Secure: h.cfg.CookieSecure, SameSite: http.SameSiteStrictMode,
+	})
+	return csrf
+}
+
+// refreshCookieName drops the __Secure- prefix in local http development: browsers reject a
+// __Secure- cookie that lacks the Secure flag, which would silently break refresh.
+func (h *Handlers) refreshCookieName(ws uuid.UUID) string {
+	name := refreshCookiePrefix
+	if !h.cfg.CookieSecure {
+		name = strings.TrimPrefix(name, "__Secure-")
+	}
+	return name + strings.ReplaceAll(ws.String(), "-", "")
 }
 
 // csrfCookieName drops the __Host- prefix in local http development, where browsers refuse it.
@@ -318,7 +330,7 @@ func (h *Handlers) csrfToken(loginSession uuid.UUID) string {
 }
 
 func (h *Handlers) clearCookies(c *gin.Context, ws uuid.UUID) {
-	http.SetCookie(c.Writer, &http.Cookie{Name: refreshCookieName(ws), Value: "", Path: h.cfg.CookiePath,
+	http.SetCookie(c.Writer, &http.Cookie{Name: h.refreshCookieName(ws), Value: "", Path: h.cfg.CookiePath,
 		MaxAge: -1, HttpOnly: true, Secure: h.cfg.CookieSecure, SameSite: http.SameSiteStrictMode})
 }
 
@@ -330,28 +342,12 @@ const refreshKey = "flwn.refresh"
 // cookieGuard (browser refresh routes) reads the refresh cookie for the X-Workspace-Id
 // workspace and enforces: allowed Origin, and X-CSRF-Token == csrf cookie == HMAC(login session).
 func (h *Handlers) cookieGuard(c *gin.Context) {
-	if !h.origins[strings.TrimRight(c.GetHeader("Origin"), "/")] {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin_not_allowed"})
-		return
-	}
-	ws, err := uuid.Parse(c.GetHeader(workspaceHeader))
-	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "workspace_header_required"})
-		return
-	}
-	ck, err := c.Request.Cookie(refreshCookieName(ws))
-	if err != nil || ck.Value == "" {
-		secure.Abort(c, auth.ErrUnauthenticated)
+	ck, ws, ls, ok := h.refreshCookie(c)
+	if !ok {
 		return
 	}
 	header := c.GetHeader(csrfHeader)
 	cookie, _ := c.Request.Cookie(h.csrfCookieName())
-	ls, err := h.svc.LoginSessionForRefresh(c.Request.Context(), ck.Value)
-	if err != nil {
-		h.clearCookies(c, ws)
-		secure.Abort(c, auth.ErrUnauthenticated)
-		return
-	}
 	want := h.csrfToken(ls)
 	if header == "" || cookie == nil ||
 		subtle.ConstantTimeCompare([]byte(header), []byte(want)) != 1 ||
@@ -362,6 +358,45 @@ func (h *Handlers) cookieGuard(c *gin.Context) {
 	c.Set(refreshKey, ck.Value)
 	c.Set("flwn.cookie_ws", ws)
 	c.Next()
+}
+
+// refreshCookie checks the Origin and reads the X-Workspace-Id workspace's refresh cookie,
+// returning it with its login session. It writes the error response when ok is false.
+func (h *Handlers) refreshCookie(c *gin.Context) (ck *http.Cookie, ws, loginSession uuid.UUID, ok bool) {
+	if !h.origins[strings.TrimRight(c.GetHeader("Origin"), "/")] {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "origin_not_allowed"})
+		return nil, uuid.Nil, uuid.Nil, false
+	}
+	ws, err := uuid.Parse(c.GetHeader(workspaceHeader))
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "workspace_header_required"})
+		return nil, uuid.Nil, uuid.Nil, false
+	}
+	ck, err = c.Request.Cookie(h.refreshCookieName(ws))
+	if err != nil || ck.Value == "" {
+		secure.Abort(c, auth.ErrUnauthenticated)
+		return nil, uuid.Nil, uuid.Nil, false
+	}
+	ls, err := h.svc.LoginSessionForRefresh(c.Request.Context(), ck.Value)
+	if err != nil {
+		h.clearCookies(c, ws)
+		secure.Abort(c, auth.ErrUnauthenticated)
+		return nil, uuid.Nil, uuid.Nil, false
+	}
+	return ck, ws, ls, true
+}
+
+// csrf returns the CSRF token for the browser's refresh cookie, so a SPA on another host of the
+// same site (which cannot read the API host's CSRF cookie) can recover it after a page reload.
+// It changes no state; the allowlisted Origin plus CORS keep other sites from reading it.
+func (h *Handlers) csrf(c *gin.Context) {
+	_, _, ls, ok := h.refreshCookie(c)
+	if !ok {
+		return
+	}
+	// The refresh expiry is unknown here, so the re-set CSRF cookie lasts for the browser
+	// session (MaxAge 0); the next refresh sets it again with the real lifetime.
+	c.JSON(http.StatusOK, gin.H{"csrf_token": h.setCSRFCookie(c, ls, 0)})
 }
 
 // refreshToken returns the refresh token from the guarded cookie (browser) or the body (native).
@@ -506,7 +541,7 @@ func (h *Handlers) changePassword(c *gin.Context) {
 		return
 	}
 	// A browser has the workspace's refresh cookie; a native client does not.
-	_, cookieErr := c.Request.Cookie(refreshCookieName(pair.WorkspaceID))
+	_, cookieErr := c.Request.Cookie(h.refreshCookieName(pair.WorkspaceID))
 	h.respondPair(c, http.StatusOK, pair, cookieErr == nil, nil)
 }
 

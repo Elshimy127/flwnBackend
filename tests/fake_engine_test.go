@@ -48,6 +48,12 @@ type fakeEngine struct {
 
 func newFakeEngine(t *testing.T) *fakeEngine {
 	t.Helper()
+	return newFakeEngineCookies(t, true)
+}
+
+// newFakeEngineCookies is newFakeEngine with COOKIE_SECURE set to cookieSecure.
+func newFakeEngineCookies(t *testing.T, cookieSecure bool) *fakeEngine {
+	t.Helper()
 	f := &fakeEngine{status: http.StatusOK, body: `{}`}
 	f.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -64,7 +70,7 @@ func newFakeEngine(t *testing.T) *fakeEngine {
 	gin.SetMode(gin.TestMode)
 	f.r, f.reg = server.NewRouter(server.Deps{
 		Engine: f.client(t), System: f.env.Engine, Auth: f.env.Svc,
-		Origins: []string{testOrigin}, CookieSecure: true, CSRFKey: []byte(strings.Repeat("c", 32)),
+		Origins: []string{testOrigin}, CookieSecure: cookieSecure, CSRFKey: []byte(strings.Repeat("c", 32)),
 	})
 	return f
 }

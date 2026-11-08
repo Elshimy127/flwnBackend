@@ -125,6 +125,7 @@ route outside the allowlist.
 | `POST /auth/session`, `/auth/workspaces` (+ `/auth/native/…`) | TICKET | active HUMAN membership |
 | `POST /auth/account/delete` | TICKET | account deletion for a user with no workspace left (tokens are workspace-bound); the ticket is a password check < 5 min old; last-owner check applies |
 | `POST /auth/refresh`, `/logout`, `/switch` (+ `/auth/native/…`) | REFRESH | — |
+| `POST /auth/csrf` | REFRESH | browser only: Origin + refresh cookie, no CSRF header; returns the CSRF token after a reload |
 | `GET /auth/me`, `/auth/workspaces`; `POST /auth/reauth`, `/password`, `/logout-device` | ACCESS | own data only |
 | `POST /auth/logout-all`, `/auth/email`; `DELETE /auth/account` | RECENT | last-owner check on delete |
 | `POST /workspaces` | ACCESS | Idempotency-Key (reserved before the handler runs: a concurrent duplicate gets 409 `request_in_progress`, a repeat gets the stored response, another body gets 409 `idempotency_key_reused`, a failed request frees the key); caller becomes owner |
@@ -152,6 +153,12 @@ route outside the allowlist.
   CORS headers and never reads or sets cookies.
 * Auth responses: `Cache-Control: no-store`. HSTS when `HSTS=true`.
 * Assumes the frontend and API are same-site (e.g. `app.` and `api.` under one domain).
+* Page reload: JS on `app.` cannot read the API host's CSRF cookie, and the access token is
+  gone. Recover with `POST /auth/csrf` (`credentials: 'include'`, `X-Workspace-Id`, no CSRF
+  header): Origin must be allowlisted and the workspace's refresh cookie valid; it returns
+  `{"csrf_token"}` and changes no state. Then call `/auth/refresh` as usual.
+* Local http development (`COOKIE_SECURE=false`): cookies are named `flwn_rt_<workspace>` and
+  `flwn_csrf`, because browsers reject `__Secure-`/`__Host-` cookies without the Secure flag.
 
 ## Recent authentication (§10)
 
