@@ -41,9 +41,13 @@ func CanonicalEmail(raw string) (string, error) {
 	if strings.ContainsRune(local, '@') && !(strings.HasPrefix(local, `"`) && strings.HasSuffix(local, `"`)) {
 		return "", ErrInvalidEmail
 	}
+	if !labelsOK(domain) {
+		return "", ErrInvalidEmail
+	}
 	asciiDomain, err := idnaProfile.ToASCII(domain)
 	if err != nil || asciiDomain == "" || !strings.Contains(asciiDomain, ".") ||
-		strings.HasPrefix(asciiDomain, ".") || strings.HasSuffix(asciiDomain, ".") {
+		strings.HasPrefix(asciiDomain, ".") || strings.HasSuffix(asciiDomain, ".") ||
+		strings.Contains(asciiDomain, "..") {
 		return "", ErrInvalidEmail
 	}
 	local = strings.ToLower(norm.NFC.String(local))
@@ -52,4 +56,32 @@ func CanonicalEmail(raw string) (string, error) {
 		return "", ErrInvalidEmail
 	}
 	return out, nil
+}
+
+// fullStops are the IDNA label separators UTS #46 maps to ".".
+var fullStops = strings.NewReplacer("。", ".", "．", ".", "｡", ".")
+
+// labelsOK rejects domains the idna package would otherwise accept with surprising output: empty
+// labels ("a..b"), a bare "xn--" label, and an "xn--" label holding non-ASCII characters (the
+// package silently re-encodes those). The data engine refuses the same inputs, so the two
+// definitions stay identical (flwn-data-engine app/domain/identity/email.py).
+func labelsOK(domain string) bool {
+	for _, label := range strings.Split(fullStops.Replace(domain), ".") {
+		if label == "" {
+			return false
+		}
+		if l := strings.ToLower(label); strings.HasPrefix(l, "xn--") && (len(l) == 4 || !isASCII(label)) {
+			return false
+		}
+	}
+	return true
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

@@ -20,6 +20,8 @@ func TestCanonicalEmail(t *testing.T) {
 		"ÉLODIE@example.com":        "élodie@example.com",
 		"Élodie@example.com":       "élodie@example.com", // NFC
 		`"weird@local"@example.com`: `"weird@local"@example.com`,
+		"a@😀.com":                   "a@xn--e28h.com", // emoji domains are allowed (UTS #46)
+		"bob@例え.テスト":                "bob@xn--r8jz45g.xn--zckzah",
 	}
 	for in, want := range ok {
 		got, err := CanonicalEmail(in)
@@ -29,7 +31,8 @@ func TestCanonicalEmail(t *testing.T) {
 	}
 	bad := []string{"", "no-at", "@example.com", "a@", "a@localhost", "a b@example.com",
 		"a@exa mple.com", "a\x00@example.com", strings.Repeat("a", 65) + "@example.com",
-		"a@" + strings.Repeat("b", 250) + ".com", "a@.example.com", "a@example.com."}
+		"a@" + strings.Repeat("b", 250) + ".com", "a@.example.com", "a@example.com.",
+		"a@b..com", "x@XN--.com", "x@xn--ﬁz.com", "a@xn--Σ-.com"} // labelsOK, same as the engine
 	for _, in := range bad {
 		if got, err := CanonicalEmail(in); err == nil {
 			t.Errorf("CanonicalEmail(%q) = %q; want error", in, got)
